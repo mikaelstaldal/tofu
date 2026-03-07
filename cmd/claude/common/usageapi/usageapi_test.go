@@ -87,7 +87,7 @@ func TestGetCached_ErrorReturnsStaleCacheAndError(t *testing.T) {
 	if stale == nil {
 		t.Fatal("expected stale cache")
 	}
-	stale.LastAttemptAt = time.Now().Add(-time.Minute)
+	stale.LastAttemptAt = time.Now().Add(-cacheTTL - 30*time.Second)
 	saveCache(stale)
 
 	// Now make fetch fail
@@ -115,7 +115,7 @@ func TestGetCached_BackoffAfterError(t *testing.T) {
 
 	// Expire
 	stale := loadCacheStale()
-	stale.LastAttemptAt = time.Now().Add(-time.Minute)
+	stale.LastAttemptAt = time.Now().Add(-cacheTTL - 30*time.Second)
 	saveCache(stale)
 
 	// Fail once — should stamp LastAttemptAt
@@ -144,7 +144,7 @@ func TestRefreshCache_BackoffAfterError(t *testing.T) {
 
 	// Expire
 	stale := loadCacheStale()
-	stale.LastAttemptAt = time.Now().Add(-time.Minute)
+	stale.LastAttemptAt = time.Now().Add(-cacheTTL - 30*time.Second)
 	saveCache(stale)
 
 	// Fail once
@@ -205,7 +205,7 @@ func TestLoadCacheWithTTL_RespectsLastAttemptAt(t *testing.T) {
 	}
 
 	// Now backdate LastAttemptAt too
-	cached.LastAttemptAt = time.Now().Add(-time.Minute)
+	cached.LastAttemptAt = time.Now().Add(-cacheTTL - 30*time.Second)
 	saveCache(cached)
 
 	result = loadCache()
