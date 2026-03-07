@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -20,6 +21,12 @@ import (
 const (
 	usageEndpoint = "https://api.anthropic.com/api/oauth/usage"
 	cacheTTL      = 30 * time.Second
+)
+
+// fetchFunc and getTokenFunc are swappable for testing.
+var (
+	fetchFunc    = Fetch
+	getTokenFunc = GetAccessToken
 )
 
 // Response represents the API response from the usage endpoint.
@@ -59,6 +66,7 @@ type CachedUsage struct {
 	SevenDaySonnet *CachedBucket `json:"seven_day_sonnet,omitempty"` // only for premium/max
 	ExtraUsage     *ExtraUsage   `json:"extra_usage,omitempty"`
 	FetchedAt      time.Time     `json:"fetched_at"`
+	LastAttemptAt  time.Time     `json:"last_attempt_at,omitempty"`
 }
 
 func cachePath() string {
@@ -148,7 +156,7 @@ func loadCacheWithTTL(ttl time.Duration) *CachedUsage {
 		return nil
 	}
 
-	if ttl > 0 && time.Since(cached.FetchedAt) > ttl {
+	if ttl > 0 && time.Since(cached.LastAttemptAt) > ttl {
 		return nil
 	}
 
@@ -193,22 +201,27 @@ func FetchRaw(token string) ([]byte, error) {
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("anthropic-beta", "oauth-2025-04-20")
 
+	slog.Debug("fetching usage data from API")
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
+		slog.Warn("usage API request failed", "error", err)
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
+		slog.Warn("usage API response read failed", "error", err)
 		return nil, err
 	}
 
 	if resp.StatusCode != 200 {
+		slog.Warn("usage API returned non-200", "status", resp.StatusCode, "body", string(body))
 		return nil, fmt.Errorf("API returned %d: %s", resp.StatusCode, string(body))
 	}
 
+	slog.Debug("usage API fetch succeeded", "status", resp.StatusCode)
 	return body, nil
 }
 
@@ -239,22 +252,38 @@ func parseBucket(b Bucket) CachedBucket {
 	return cb
 }
 
+// stampLastAttempt updates LastAttemptAt on the cache file so that
+// subsequent calls respect the cacheTTL backoff even after a failed fetch.
+// Creates a minimal cache entry if none exists.
+func stampLastAttempt() {
+	cached := loadCacheStale()
+	if cached == nil {
+		cached = &CachedUsage{}
+	}
+	cached.LastAttemptAt = time.Now()
+	saveCache(cached)
+}
+
 // RefreshCache updates the cache if stale. Called from hooks when the user is
 // likely looking at the status bar. Skips the fetch if the disk cache is fresh.
 func RefreshCache() {
 	if cached := loadCache(); cached != nil {
 		return // still fresh, nothing to do
 	}
-	token, err := GetAccessToken()
+	token, err := getTokenFunc()
 	if err != nil {
+		stampLastAttempt()
 		return
 	}
-	resp, err := Fetch(token)
+	resp, err := fetchFunc(token)
 	if err != nil {
+		stampLastAttempt()
 		return
 	}
+	now := time.Now()
 	cached := &CachedUsage{
-		FetchedAt: time.Now(),
+		FetchedAt:     now,
+		LastAttemptAt: now,
 	}
 	if resp.FiveHour != nil {
 		b := parseBucket(*resp.FiveHour)
@@ -281,24 +310,30 @@ func GetCached() (*CachedUsage, error) {
 		return cached, nil
 	}
 
-	token, err := GetAccessToken()
+	token, err := getTokenFunc()
 	if err != nil {
-		if stale := loadCacheStale(); stale != nil {
+		stampLastAttempt()
+		if stale := loadCacheStale(); stale != nil && !stale.FetchedAt.IsZero() {
 			return stale, fmt.Errorf("using stale cache: %w", err)
 		}
+		slog.Warn("no usage data available", "error", err)
 		return nil, err
 	}
 
-	resp, err := Fetch(token)
+	resp, err := fetchFunc(token)
 	if err != nil {
-		if stale := loadCacheStale(); stale != nil {
+		stampLastAttempt()
+		if stale := loadCacheStale(); stale != nil && !stale.FetchedAt.IsZero() {
 			return stale, fmt.Errorf("using stale cache: %w", err)
 		}
+		slog.Warn("no usage data available", "error", err)
 		return nil, err
 	}
 
+	now := time.Now()
 	cached := &CachedUsage{
-		FetchedAt: time.Now(),
+		FetchedAt:     now,
+		LastAttemptAt: now,
 	}
 	if resp.FiveHour != nil {
 		b := parseBucket(*resp.FiveHour)
