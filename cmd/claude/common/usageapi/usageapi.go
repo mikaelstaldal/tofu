@@ -284,7 +284,7 @@ func GetCached() (*CachedUsage, error) {
 	token, err := GetAccessToken()
 	if err != nil {
 		if stale := loadCacheStale(); stale != nil {
-			return stale, nil
+			return stale, fmt.Errorf("using stale cache: %w", err)
 		}
 		return nil, err
 	}
@@ -292,7 +292,7 @@ func GetCached() (*CachedUsage, error) {
 	resp, err := Fetch(token)
 	if err != nil {
 		if stale := loadCacheStale(); stale != nil {
-			return stale, nil
+			return stale, fmt.Errorf("using stale cache: %w", err)
 		}
 		return nil, err
 	}

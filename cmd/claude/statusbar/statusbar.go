@@ -207,7 +207,8 @@ func run() error {
 	hasLimits := false
 	if err != nil {
 		slog.Warn("status-bar: failed to fetch usage", "error", err)
-	} else {
+	}
+	if usage != nil {
 		if usage.FiveHour != nil {
 			hasLimits = true
 			line2 = append(line2, fmt.Sprintf("5h %s %.0f%% %s", progressBar(int(usage.FiveHour.Pct)), usage.FiveHour.Pct, resetTimer(usage.FiveHour.ResetsAt)))
